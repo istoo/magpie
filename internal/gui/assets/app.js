@@ -2102,10 +2102,10 @@ function renderEditor(p, presetID) {
   // more provider of it, under a name and id of its own
   const another = isNew && !!pr?.added;
   draft = draft || (p
-    ? { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, catalog: p.catalog, key: "", api: p.chat ? "openai" : p.anthropic ? "anthropic" : p.responses ? "responses" : "openai", chosen: p.models.filter((m) => m.on).map((m) => m.id), extra: [], headers: headerRows(p.headers), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", modelsURL: p.modelsURL || "" }
+    ? { id: p.id, name: p.name, preset: p.preset, chat: p.chat, responses: p.responses, anthropic: p.anthropic, catalog: p.catalog, key: "", api: p.chat ? "openai" : p.anthropic ? "anthropic" : p.responses ? "responses" : "openai", chosen: p.models.filter((m) => m.on).map((m) => m.id), headers: headerRows(p.headers), icon: p.icon || "", fallback: [...(p.fallback || [])], unlisted: !!p.unlisted, balanceURL: p.balanceURL || "", balancePath: p.balancePath || "", modelsURL: p.modelsURL || "" }
     : pr
-      ? { id: pr.id, name: pr.name, preset: pr.id, key: "", chosen: [], extra: [], headers: [] }
-      : { id: "", name: "", preset: "", chat: "", responses: "", anthropic: "", catalog: "", key: "", api: "openai", chosen: [], extra: [], headers: [], icon: "" });
+      ? { id: pr.id, name: pr.name, preset: pr.id, key: "", chosen: [], headers: [] }
+      : { id: "", name: "", preset: "", chat: "", responses: "", anthropic: "", catalog: "", key: "", api: "openai", chosen: [], headers: [], icon: "" });
   const ed = el("div", "editor" + (isNew ? " new" : ""));
   ed.onclick = (e) => e.stopPropagation();
 
@@ -2193,7 +2193,7 @@ function renderEditor(p, presetID) {
       acct.append(icon(a.agentIcon), el("span", "n", a.user), el("span", "plan", accountPlan(a)));
       ed.append(...field(t("Account"), acct, t("{agent}'s sign-in, read from its own files. Sign out there and this provider goes away.", { agent: a.agentName })));
     }
-    ed.append(...field(t("Models"), renderModels(p), ""));
+    ed.append(...field(t("Models"), renderModels(p, () => ({ id: p.id })), ""));
     ed.append(...field(t("Fallback"), renderFallback(p), fallbackHint(p)));
     if (p.chat || p.responses || p.anthropic) ed.append(...field(t("Endpoints"), renderEndpoints(p, p)));
     const bar = el("div", "bar");
@@ -2289,13 +2289,15 @@ function renderEditor(p, presetID) {
     ed.append(...field(t(pr.regionLabel || "Region"), seg, t("which endpoint {p} is reached through", { p: pr.name })));
   }
 
-  if (p) ed.append(...field(t("Models"), renderModels(p), ""));
+  // what Fetch models asks the vendor with: the form as it is now
+  const link = () => {
+    if (custom && !draft.chat && !draft.responses && !draft.anthropic) { url.focus(); editorError(t("A base URL is needed"), "warn"); return null; }
+    if (isNew && pr && !pr.noKey && !draft.key) { key.focus(); editorError(t("Paste an API key first"), "warn"); return null; }
+    editorError("");
+    return { id: draft.id, name: draft.name, preset: draft.preset, key: draft.key || "", chat: draft.chat, responses: draft.responses, anthropic: draft.anthropic, headers: headersOf(draft.headers), modelsURL: (draft.modelsURL || "").trim(), new: isNew };
+  };
+  ed.append(...field(t("Models"), renderModels(p, link), ""));
   if (p) ed.append(...field(t("Fallback"), renderFallback(p), fallbackHint(p)));
-  else if (custom) {
-    const ex = input(draft.extra.join(", "), t("model ids, comma separated · e.g. gpt-5.5, claude-sonnet-5"));
-    ex.oninput = () => { draft.extra = ex.value.split(/[,\s]+/).filter(Boolean); };
-    ed.append(...field(t("Models"), ex, t("Optional: magpie asks the vendor for its list after saving.")));
-  }
 
   if (!custom) {
     const ebox = el("div");
@@ -2310,6 +2312,8 @@ function renderEditor(p, presetID) {
 
   if (custom) {
     const more = el("details", "more");
+    more.open = !!draft.more; // kept when the editor is drawn again, as a fetch does
+    more.ontoggle = () => { draft.more = more.open; };
     more.append(el("summary", "", t("More endpoints")));
     const inner = el("div", "inner");
     // the other protocols' URLs, drawn again when the base URL's changes
@@ -2364,7 +2368,7 @@ function renderEditor(p, presetID) {
   const saveBtn = el("button", "text primary", t(isNew ? "Add" : "Save"));
   const save = () => {
     // new: an Add never replaces a provider that has the id already
-    const body = { id: draft.id, name: draft.name, preset: draft.preset, key: draft.key || "", chat: draft.chat, responses: draft.responses, anthropic: draft.anthropic, catalog: draft.catalog, models: p ? draft.chosen : draft.extra, headers: headersOf(draft.headers), new: isNew };
+    const body = { id: draft.id, name: draft.name, preset: draft.preset, key: draft.key || "", chat: draft.chat, responses: draft.responses, anthropic: draft.anthropic, catalog: draft.catalog, models: draft.chosen, headers: headersOf(draft.headers), new: isNew };
     if (custom) { body.icon = draft.icon || "generic"; body.balanceURL = (draft.balanceURL || "").trim(); body.balancePath = (draft.balancePath || "").trim(); body.modelsURL = (draft.modelsURL || "").trim(); }
     if (p) { body.fallback = draft.fallback; body.unlisted = draft.unlisted; }
     if (draft.balanceToken) body.balanceToken = draft.balanceToken;
@@ -2665,8 +2669,6 @@ function renderImport(im) {
   return ed;
 }
 
-// Which of the vendor's models the agents get to see: click to toggle, type
-// to add one the vendor's list lacks, Refresh to ask the vendor again.
 // The endpoints a provider serves, with a Test that reports against each one.
 function renderEndpoints(p, src) {
   const eps = el("div", "eps");
@@ -2705,15 +2707,20 @@ function renderEndpoints(p, src) {
   return eps;
 }
 
-function renderModels(p) {
+// Which of the vendor's models the agents get to see: click to toggle, type
+// to add one the vendor's list lacks. Fetch models asks the vendor with what
+// the form holds now, saved or not, as CC Switch does; link says what that
+// is, or null when the form can't ask yet.
+function renderModels(p, link) {
   const box = el("div", "models");
+  const list = draft.fetched || p?.models || [];
   const chips = el("div", "mchips");
-  const q = p.models.length > 24 ? input("", t("filter {n} models…", { n: p.models.length })) : null;
+  const q = list.length > 24 ? input("", t("filter {n} models…", { n: list.length })) : null;
   const draw = () => {
     chips.replaceChildren();
     const f = (q?.value || "").trim().toLowerCase();
     let shown = 0;
-    for (const m of p.models) {
+    for (const m of list) {
       const on = draft.chosen.includes(m.id);
       if (f && !m.id.toLowerCase().includes(f) && !(m.name || "").toLowerCase().includes(f) && !on) continue;
       const c = el("button", "mchip" + (on ? " on" : ""));
@@ -2721,22 +2728,45 @@ function renderModels(p) {
       if (m.name && m.name !== m.id) c.title = m.id;
       c.onclick = () => { draft.chosen = on ? draft.chosen.filter((x) => x !== m.id) : [...draft.chosen, m.id]; draw(); };
       chips.append(c);
-      if (++shown >= 80 && !f) { chips.append(el("span", "hint", t("… {n} more, filter to find them", { n: p.models.length - shown }))); break; }
+      if (++shown >= 80 && !f) { chips.append(el("span", "hint", t("… {n} more, filter to find them", { n: list.length - shown }))); break; }
     }
     for (const id of draft.chosen) {
-      if (p.models.some((m) => m.id === id)) continue;
+      if (list.some((m) => m.id === id)) continue;
       const c = el("button", "mchip on own");
       c.append(el("span", "", id));
       c.title = t("Added by hand");
       c.onclick = () => { draft.chosen = draft.chosen.filter((x) => x !== id); draw(); };
       chips.append(c);
     }
-    if (!p.models.length && !draft.chosen.length) chips.append(el("span", "hint", t("The vendor's list is empty. Refresh, or type a model id.")));
+    if (!list.length && !draft.chosen.length) chips.append(el("span", "hint", t(p ? "The vendor's list is empty. Fetch models, or type a model id." : "Fetch models to pick from the vendor's list, or type a model id.")));
     why.textContent = draft.unlisted ? t("Agents don't see them: only the routing groups they are in use them.")
       : t(draft.chosen.length ? "Agents see the models picked." : "None picked: agents see the vendor's list, up to {n}.", { n: 24 });
   };
-  if (q) { q.oninput = draw; box.append(q); }
-  box.append(chips);
+  const head = el("div", "mhead");
+  if (q) { q.oninput = draw; head.append(q); }
+  head.append(el("span", "grow"));
+  const fetchBtn = el("button", "text action fetch");
+  fetchBtn.append(svg("M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13h10"), el("span", "", t("Fetch models")));
+  fetchBtn.title = t("Ask the vendor which models it serves, with the URL and key above");
+  fetchBtn.onclick = async () => {
+    const body = link();
+    if (!body) return;
+    fetchBtn.classList.add("busy");
+    fetchBtn.lastChild.textContent = t("Fetching…");
+    try {
+      const r = await api("provider/fetch", body);
+      status(t("Found {n} models", { n: r.models.length }), "ok");
+      // kept: the saved provider's list is the vendor's now, as the reload shows
+      if (r.kept) { delete draft.fetched; await loadProviders(); }
+      else { draft.fetched = r.models; renderProviders(); }
+    } catch (e) {
+      status(e.message, "err");
+      fetchBtn.classList.remove("busy");
+      fetchBtn.lastChild.textContent = t("Fetch models");
+    }
+  };
+  head.append(fetchBtn);
+  box.append(head, chips);
   const foot = el("div", "mfoot");
   const add = input("", t("add a model id…"));
   add.onkeydown = (e) => {
@@ -2744,28 +2774,15 @@ function renderModels(p) {
     if (e.key === "Enter" && add.value.trim()) { const id = add.value.trim(); if (!draft.chosen.includes(id)) draft.chosen.push(id); add.value = ""; draw(); }
     else if (e.key === "Escape") cancelEdit();
   };
-  const refresh = el("button", "text action", t("Refresh"));
-  refresh.title = t("Ask the vendor which models it serves");
-  refresh.onclick = async () => {
-    refresh.classList.add("busy");
-    try {
-      const r = await api("provider/models", { id: p.id });
-      status(t("{p}: {n} models", { p: p.name, n: r.count }), "ok");
-      const chosen = draft.chosen;
-      await loadProviders();
-      draft = draft || {};
-      draft.chosen = chosen;
-      renderProviders();
-    } catch (e) { status(e.message, "err"); refresh.classList.remove("busy"); }
-  };
-  foot.append(add, refresh);
-  if (p.fetched) foot.append(el("span", "hint", t("vendor list · {when}", { when: p.fetched })));
+  foot.append(add);
+  if (draft.fetched) foot.append(el("span", "hint", t(p ? "vendor list · just now, kept on Save" : "vendor list · just now")));
+  else if (p?.fetched) foot.append(el("span", "hint", t("vendor list · {when}", { when: p.fetched })));
   // a signed-in account's list, until the vendor gives one, is magpie's own
-  else if (p.models.length) foot.append(el("span", "hint", t(p.account ? "magpie's list · Refresh asks the vendor" : "from models.dev · Refresh asks the vendor")));
-  if (p.fetched && !p.account) {
+  else if (list.length) foot.append(el("span", "hint", t(p?.account ? "magpie's list" : "from models.dev")));
+  if (p?.fetched && !p.account && !draft.fetched) {
     // the fetched list stands in for the picks when none are made
     const forget = el("button", "text action", t("Forget"));
-    forget.title = t("Drop the list fetched from the vendor; the models.dev one is used until Refresh");
+    forget.title = t("Drop the list fetched from the vendor; the models.dev one is used until models are fetched again");
     forget.onclick = async () => {
       forget.classList.add("busy");
       try { await api("provider/unfetch", { id: p.id }); const chosen = draft.chosen; await loadProviders(); draft.chosen = chosen; renderProviders(); }
@@ -2775,10 +2792,12 @@ function renderModels(p) {
   }
   box.append(foot);
   const why = el("div", "hint");
-  const [tk, cb] = tick(t("Only through routing groups"), !!draft.unlisted);
-  cb.onchange = () => { draft.unlisted = cb.checked; draw(); };
-  tk.title = t("Its models leave the list agents pick from; the routing groups they are in still use them");
-  box.append(tk);
+  if (p) {
+    const [tk, cb] = tick(t("Only through routing groups"), !!draft.unlisted);
+    cb.onchange = () => { draft.unlisted = cb.checked; draw(); };
+    tk.title = t("Its models leave the list agents pick from; the routing groups they are in still use them");
+    box.append(tk);
+  }
   box.append(why);
   draw();
   return box;

@@ -145,6 +145,28 @@ func currentProvider(a *agent.Agent) (string, string) {
 	return "", ""
 }
 
+// editorProvider is the provider the editor's form describes, and the saved
+// one it edits (nil for one being added). What the form leaves blank — the
+// key, a preset's URLs — is filled in as saving would.
+func editorProvider(in provider.Provider, isNew bool) (provider.Provider, *provider.Provider) {
+	var old *provider.Provider
+	if !isNew {
+		old, _ = provider.Find(in.ID)
+	}
+	if old != nil && old.Account != nil {
+		return *old, old // a sign-in has nothing the form can change
+	}
+	q := in
+	if pr, err := provider.FromPreset(in.Preset); err == nil && in.Chat == "" && in.Responses == "" && in.Anthropic == "" {
+		pr.Key, pr.Headers = in.Key, in.Headers
+		q = pr
+	}
+	if old != nil && q.Key == "" {
+		q.Key = old.Key
+	}
+	return q, old
+}
+
 func providerInfo(p provider.Provider, agents []*agent.Agent) providerJSON {
 	out := providerJSON{
 		ID: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Host: p.Host(),
@@ -396,8 +418,8 @@ func providerRoutes(mux *http.ServeMux, w Windows, gw *gateway.Server) {
 				}
 			}
 			provider.ForgetBalances()
-			// a new key means a new vendor list is worth a try; keep it short
-			if p, err := provider.Find(in.ID); err == nil && p.Ready() && (old == nil || old.Key != p.Key) {
+			// a new key or URL means a new vendor list is worth a try; keep it short
+			if p, err := provider.Find(in.ID); err == nil && p.Ready() && (old == nil || !provider.SameLink(*old, *p)) {
 				ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 				p.Fetch(ctx)
 				cancel()
@@ -441,28 +463,39 @@ func providerRoutes(mux *http.ServeMux, w Windows, gw *gateway.Server) {
 			}{p.Test(ctx), providerInfo(*p, agent.Detected())})
 			return
 		case "unfetch":
-			// the vendor's list, forgotten until the next Refresh
+			// the vendor's list, forgotten until models are fetched again
 			if err := catalog.SaveLive(in.ID, "", nil); err != nil {
 				fail(rw, err)
 				return
 			}
-		case "models":
-			p, err := provider.Find(in.ID)
+		case "fetch":
+			// the editor's Fetch models, as CC Switch has it: the vendor is
+			// asked with what the form holds now, saved or not. A saved
+			// provider asked just as it is saved keeps the list; any other
+			// only shows it, and its Save asks again.
+			q, old := editorProvider(in, req.New)
+			kept := old != nil && (old.Account != nil || provider.SameLink(*old, q))
+			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+			defer cancel()
+			var ms []catalog.Model
+			var err error
+			if kept {
+				ms, err = old.Fetch(ctx)
+			} else {
+				ms, err = q.Probe(ctx)
+			}
 			if err != nil {
 				fail(rw, err)
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-			defer cancel()
-			var ms []catalog.Model
-			if ms, err = p.Fetch(ctx); err != nil {
-				fail(rw, err)
-				return
+			out := []modelJSON{}
+			for _, m := range ms {
+				out = append(out, modelJSON{ID: m.ID, Name: m.Name})
 			}
 			writeJSON(rw, struct {
-				Count    int          `json:"count"`
-				Provider providerJSON `json:"provider"`
-			}{len(ms), providerInfo(*p, agent.Detected())})
+				Models []modelJSON `json:"models"`
+				Kept   bool        `json:"kept"`
+			}{out, kept})
 			return
 		default:
 			http.NotFound(rw, r)

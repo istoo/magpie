@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -80,30 +81,56 @@ func (p Provider) Fetch(ctx context.Context) ([]catalog.Model, error) {
 	return ms, catalog.SaveLive(p.ID, base, ms)
 }
 
+// Probe asks the vendor which models it serves with p as it stands — one
+// the editor is adding, or whose key or URLs it has changed but not saved —
+// and keeps nothing: neither the list nor a /v1 the base URL lacked.
+func (p Provider) Probe(ctx context.Context) ([]catalog.Model, error) {
+	ms, _, _, err := p.ask(ctx)
+	return ms, err
+}
+
+// SameLink reports whether a and b reach the vendor alike: the same key,
+// URLs and headers, so a list asked with one is the other's too.
+func SameLink(a, b Provider) bool {
+	return a.Key == b.Key && a.Chat == b.Chat && a.Responses == b.Responses && a.Anthropic == b.Anthropic &&
+		strings.TrimSpace(a.ModelsURL) == strings.TrimSpace(b.ModelsURL) &&
+		maps.Equal(cleanHeaders(a.Headers), cleanHeaders(b.Headers))
+}
+
 // fetchOne asks the first endpoint that answers, with p's key.
 func (p Provider) fetchOne(ctx context.Context) ([]catalog.Model, string, error) {
+	ms, base, at, err := p.ask(ctx)
+	if err == nil && at != "" {
+		base = p.fixV1(base, at)
+	}
+	return ms, base, err
+}
+
+// ask is fetchOne without saving anything: the list, the base URL it came
+// from, and, for an OpenAI-style base, the URL that answered.
+func (p Provider) ask(ctx context.Context) ([]catalog.Model, string, string, error) {
 	if u := strings.TrimSpace(p.ModelsURL); u != "" {
 		// asked where the user said, and nowhere else: the base URLs
 		// list nothing, or the wrong thing
 		ms, err := catalog.FetchURL(ctx, u, p.Key, p.Chat == "" && p.Responses == "", p.Headers)
-		return ms, u, err
+		return ms, u, "", err
 	}
 	var lastErr error
 	for _, proto := range p.Speaks() {
 		base := p.Base(proto)
 		ms, at, err := catalog.FetchAt(ctx, base, p.Key, proto == Anthropic, p.Headers)
 		if err == nil {
-			if proto != Anthropic {
-				base = p.fixV1(base, at)
+			if proto == Anthropic {
+				at = ""
 			}
-			return ms, base, nil
+			return ms, base, at, nil
 		}
 		lastErr = err
 	}
 	if lastErr == nil {
 		lastErr = errorf("%s has no endpoint to ask", p.Name)
 	}
-	return nil, "", lastErr
+	return nil, "", "", lastErr
 }
 
 // fixV1 adds the /v1 an OpenAI-style base URL was given without, when
